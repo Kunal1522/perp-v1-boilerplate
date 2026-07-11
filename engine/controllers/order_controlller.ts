@@ -9,9 +9,28 @@ import {
   type Position,
   type UserInterface,
 } from "../exchange_store";
-import { literal } from "zod/v3";
-import type { User } from "../../backend/generated/prisma/client";
-import { positive } from "zod";
+
+
+/**
+ * 
+ * @param quote 
+ * @param type 
+ * @returns 
+ *              * type Orderbooks = {
+    [x: string]: {
+        bids: {
+            [x: string]: Bid;
+        };
+        asks: {
+            [x: string]: Bid;
+        };
+        lastTradedPrice: number;
+        indexPrice: number;
+    };
+
+  
+}
+ */
 /*export type Bid = {
   availableQty: number;
   openOrders: {
@@ -22,7 +41,7 @@ import { positive } from "zod";
     createdAt: Date;
   }[];
 };
-export type Orderbook = {
+export type Orderbook = {z
   bids: Record<string, Bid>;
   asks: Record<string, Bid>;
   lastTradedPrice: number;
@@ -40,6 +59,22 @@ export function isincreasingposn(quote: string, type: string) {
     (quote === "bids" && type === "LONG") ||
     (quote === "asks" && type === "SHORT")
   );
+}
+export function get_valid_price(quote:'asks'| 'bids',resting_orders:Record<string,Bid>,price:number){
+  let valid_price;
+  if(quote==='bids'){
+  valid_price = Object.keys(resting_orders).filter((priceit) => {
+      Number(priceit) <= price && Number(priceit) !== 0;
+    });
+    valid_price.sort((a, b) => Number(a) - Number(b));
+  }
+  else {
+    valid_price = Object.keys(resting_orders).filter((priceit) => {
+      Number(priceit) >= price && Number(priceit) !== 0;
+    });
+    valid_price.sort((a, b) => Number(b) - Number(a));
+  }
+  return valid_price;
 }
 //average price represnets the cost at which i entered the marked
 //pnl involved the calculatio
@@ -67,7 +102,6 @@ export function updatepnlandavgprice(
     posn.pnl = traded_qty * (posn.averagePrice - trading_price);
   }
 }
-
 //this should be used at last so it does not affect other posn
 export function updateqty(posn: Position, quote: string, tradedqty: number) {
   if (posn.type === "LONG" && quote === "asks") {
@@ -137,33 +171,13 @@ export function get_position(
   }
   return req_market;
 }
-export function updateorderbook(){
 
-}
-export async function order_handler(req: any, res: Response) {
-  const parsedBody = orderschema.safeParse(req.body);
-  if (!parsedBody.success) {
-    throw new Error("the req is not correct to engine");
-  }
-  let fills: fillsinterface[];
-  const { asset, userId, qty, type, price } = parsedBody.data;
-  let trader = users.find((user) => user.userId === userId);
-  if (!trader) {
-    trader = {
-      userId: userId,
-      collateral: {
-        available: 0,
-        locked: 0,
-      },
-      positions: [],
-    };
-    users.push(trader);
-  }
-  //bids==long
+export function tradermatcher(trader:UserInterface,qty:number,userId:string,price:number,type:string,asset:string)
+{
+    //bids==long
   //asks==short
   const resting_quote = type === "bids" ? "asks" : "bids";
-  let filledQty = 0;
-  if (type === "bids") {
+    let filledQty = 0;
     const tot_price = qty * price;
     //here call update balances
     const trader_posn = get_position(userId, asset, "bids");
@@ -177,6 +191,8 @@ export async function order_handler(req: any, res: Response) {
         indexPrice: 0,
       };
     }
+
+    //asset book
     let resting_orders: Record<string, Bid> =
       asset_book[resting_quote as "bids" | "asks"];
     if (!resting_orders) {
@@ -184,10 +200,7 @@ export async function order_handler(req: any, res: Response) {
         "": { availableQty: 0, openOrders: [] }, // string key, not null
       };
     }
-    let valid_price = Object.keys(resting_orders).filter((it) => {
-      Number(it) <= price && Number(it) !== 0;
-    });
-    valid_price.sort((a, b) => Number(a) - Number(b));
+    let valid_price=get_valid_price(resting_quote,resting_orders,price)
     for (const resting_price of valid_price) {
       let Orders = resting_orders[resting_price];
       if (!Orders) {
@@ -222,7 +235,7 @@ export async function order_handler(req: any, res: Response) {
             trading_price,
             traded_qty,
           );         
-          openOrder.filledQty += traded_qty; //edge case left here where we split in 2 orders
+          openOrder.filledQty += traded_qty; //edge case left here where we split in 2 order
           filledQty += traded_qty;
           Orders.availableQty -= traded_qty;
           //status filled ??
@@ -235,7 +248,6 @@ export async function order_handler(req: any, res: Response) {
           // resting_order.status = filledflag ? "filled" : "open";
           //ORDERBOOK ONLY LAST TRADING PRICE IS UPDATED
           asset_book.lastTradedPrice = Number(resting_price);
-
           //here we are updating asks
           const orderId = crypto.randomUUID();
           if (filledQty !== qty) {
@@ -254,6 +266,41 @@ export async function order_handler(req: any, res: Response) {
               createdAt: new Date(),
             });
           }
+}
+      }
+    }
+  }
+
+export async function order_handler(req: any, res: Response) {
+  const parsedBody = orderschema.safeParse(req.body);
+  if (!parsedBody.success) {
+    throw new Error("the req is not correct to engine");
+  }
+  let fills: fillsinterface[];
+  const { asset, userId, qty, type, price } = parsedBody.data;
+  let trader = users.find((user) => user.userId === userId);
+  if (!trader) {
+    trader = {
+      userId: userId,
+      collateral: {
+        available: 0,
+        locked: 0,
+      },
+      positions: [],
+    };
+    users.push(trader);
+  }
+  const trader_posn=get_position(userId,asset,type);
+  if(!isincreasingposn(type,trader_posn.type) && trader_posn.qty<qty)
+  {
+    //matcher
+    tradermatcher(trader,trader_posn.qty,userId,price,type,asset);
+    tradermatcher(trader,qty-trader_posn.qty,userId,price,type,asset);
+  }
+  else {
+      tradermatcher(trader,qty,userId,price,type,asset);
+  }
+
             /**
              * type Orderbooks = {
     [x: string]: {
@@ -279,11 +326,9 @@ export async function order_handler(req: any, res: Response) {
           //   available: number;
           //   locked: number;
           // }
-        }
-      }
+        
     }
-  }
-}
+
 // trader.orders.push({
 //   orderId: orderId,
 //   market: asset,
